@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Everport MultiView</title>
+
+<!-- iPad/iPhone Standalone -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="manifest" href='data:application/manifest+json,{"name":"Everport MultiView","short_name":"MultiView","display":"standalone","background_color":"#000","theme_color":"#000"}'>
+
+<style>
+  html,body{
+    margin:0; height:100%;
+    background:#000;
+    font-family:system-ui,-apple-system,"Apple SD Gothic Neo",sans-serif;
+    overflow:hidden;
+  }
+  .stage{
+    position:fixed;
+    inset:0;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right)
+            env(safe-area-inset-bottom) env(safe-area-inset-left);
+    height:100dvh;
+    outline:none;
+  }
+
+  /* 3분할 */
+  .cams{
+    position:absolute; inset:0;
+    display:grid; grid-template-columns:1fr 1fr 1fr;
+    gap:0; background:#000; z-index:1;
+  }
+  .cams iframe{
+    width:100%; height:100%;
+    border:0; display:block; object-fit:cover;
+  }
+
+  /* 오버레이 이미지 */
+  .screen{
+    position:absolute; inset:0;
+    background-position:center;
+    background-size:cover;
+    background-repeat:no-repeat;
+    display:none;
+  }
+  #screen-record{z-index:3;}
+  #screen-result{z-index:5;}
+  #screen-save{z-index:6;}
+
+  /* 캡처 영역 */
+  #shot{position:absolute; inset:0; display:none; z-index:4;}
+  #shot canvas{width:100%; height:100%; display:block;}
+
+  /* 투명 클릭영역 */
+  .hotspot{
+    position:absolute; cursor:pointer; background:transparent; z-index:20;
+  }
+  body.debug-hotspots .hotspot{
+    background:rgba(255,0,0,.3); outline:1px dashed #fff;
+  }
+
+  /* 우하단 전체화면 버튼 */
+  #hs-full{right:0; bottom:0; width:48px; height:48px; z-index:30;}
+</style>
+</head>
+<body>
+<div class="stage" id="stage" tabindex="0">
+  <!-- 3분할 -->
+  <div id="cams" class="cams">
+    <iframe id="v-side"  allow="camera; microphone; autoplay; fullscreen; clipboard-write"></iframe>
+    <iframe id="v-front" allow="camera; microphone; autoplay; fullscreen; clipboard-write"></iframe>
+    <iframe id="v-back"  allow="camera; microphone; autoplay; fullscreen; clipboard-write"></iframe>
+  </div>
+
+  <!-- 오버레이 -->
+  <div id="screen-record" class="screen" style="background-image:url('record.png')"></div>
+  <div id="shot"><canvas id="out"></canvas></div>
+  <div id="screen-result" class="screen" style="background-image:url('resultframe.png')"></div>
+  <div id="screen-save"   class="screen" style="background-image:url('saveframe.png')"></div>
+
+  <!-- 투명 스팟 -->
+  <div id="hs-full"   class="hotspot" title="fullscreen"></div>
+  <div id="hs-record" class="hotspot" style="display:none"></div>
+  <div id="hs-back"   class="hotspot" style="display:none"></div>
+  <div id="hs-print"  class="hotspot" style="display:none"></div>
+</div>
+
+<script>
+(()=> {
+  // === 카메라 파라미터 ===
+  const q=new URLSearchParams(location.search);
+  const viewUrl = n => `https://vdo.ninja/?view=${encodeURIComponent(n)}&transparent=1&cleanoutput`;
+  document.getElementById('v-side').src  = viewUrl(q.get('side')  || 'side');
+  document.getElementById('v-front').src = viewUrl(q.get('front') || 'front');
+  document.getElementById('v-back').src  = viewUrl(q.get('back')  || 'back');
+
+  // === 요소 ===
+  const stage=document.getElementById('stage');
+  const cams=document.getElementById('cams');
+  const scrRecord=document.getElementById('screen-record');
+  const scrResult=document.getElementById('screen-result');
+  const scrSave=document.getElementById('screen-save');
+  const shotWrap=document.getElementById('shot');
+  const canvas=document.getElementById('out');
+  const hsFull=document.getElementById('hs-full');
+  const hsRecord=document.getElementById('hs-record');
+  const hsBack=document.getElementById('hs-back');
+  const hsPrint=document.getElementById('hs-print');
+
+  // === 위치 ===
+  const HS={
+    record:{w:0.12,h:0.12,cx:0.50,cy:0.88},
+    back:{x:0.004,y:0.045,w:0.055,h:0.075},
+    print:{x:0.004,y:0.115,w:0.055,h:0.075}
+  };
+  function placeHotspots(){
+    const r=document.body.getBoundingClientRect(),W=r.width,H=r.height;
+    const rw=W*HS.record.w,rh=H*HS.record.h,rx=W*HS.record.cx-rw/2,ry=H*HS.record.cy-rh/2;
+    Object.assign(hsRecord.style,{left:rx+'px',top:ry+'px',width:rw+'px',height:rh+'px'});
+    Object.assign(hsBack.style,{left:(W*HS.back.x)+'px',top:(H*HS.back.y)+'px',width:(W*HS.back.w)+'px',height:(H*HS.back.h)+'px'});
+    Object.assign(hsPrint.style,{left:(W*HS.print.x)+'px',top:(H*HS.print.y)+'px',width:(W*HS.print.w)+'px',height:(H*HS.print.h)+'px'});
+  }
+  addEventListener('resize',placeHotspots);
+  addEventListener('load',placeHotspots);
+
+  // === 화면공유 스트림 ===
+  let stream=null,video=null;
+  async function ensureCaptureOnce(){
+    if(stream) return;
+    stream=await navigator.mediaDevices.getDisplayMedia({video:{displaySurface:'browser',frameRate:30},audio:false});
+    video=document.createElement('video');
+    video.srcObject=stream; video.muted=true; video.playsInline=true;
+    await video.play();
+  }
+  const nextFrame=()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+  // === fullscreen or fallback ===
+  async function goFullscreenOrFallback(){
+    const root=document.documentElement;
+    try{
+      if(!document.fullscreenElement){
+        await (root.requestFullscreen?.()||root.webkitRequestFullscreen?.call(root));
+      }
+    }catch(_){/* ignore */}
+    scrRecord.style.display='block';
+    hsRecord.style.display='block';
+    stage.focus({preventScroll:true});
+  }
+
+  // === Full 버튼 ===
+  hsFull.addEventListener('click',async()=>{
+    try{await ensureCaptureOnce();}catch(e){alert('이 탭을 선택해주세요.');return;}
+    goFullscreenOrFallback();
+  });
+
+  // === Record ===
+  hsRecord.addEventListener('click',async()=>{
+    try{
+      await ensureCaptureOnce();
+      scrRecord.style.display='none';
+      hsRecord.style.display='none';
+      scrResult.style.display='none';
+      scrSave.style.display='none';
+      await nextFrame(); await nextFrame(); await sleep(60);
+
+      const vw=video.videoWidth||innerWidth,vh=video.videoHeight||innerHeight;
+      canvas.width=vw; canvas.height=vh;
+      const ctx=canvas.getContext('2d'); ctx.imageSmoothingQuality='high';
+      ctx.drawImage(video,0,0,vw,vh);
+
+      cams.style.display='none';
+      shotWrap.style.display='block';
+      scrResult.style.display='block';
+      hsBack.style.display='block';
+      hsPrint.style.display='block';
+    }catch(e){alert('화면 캡처 권한이 필요합니다.');console.error(e);}
+  });
+
+  // === Print (자동저장 없음, saveframe 표시만) ===
+  hsPrint.addEventListener('click',()=>{
+    scrResult.style.display='none'; // resultframe 제거
+    scrSave.style.display='block';  // saveframe 표시
+    hsPrint.style.display='none';
+    hsBack.style.display='block';   // Back만 남김
+  });
+
+  // === Back ===
+  hsBack.addEventListener('click',()=>{
+    scrSave.style.display='none';
+    scrResult.style.display='none';
+    shotWrap.style.display='none';
+    cams.style.display='grid';
+    scrRecord.style.display='block';
+    hsRecord.style.display='block';
+    hsBack.style.display='none';
+    hsPrint.style.display='none';
+    stage.focus({preventScroll:true});
+  });
+
+  // === 터치 포커스 유지 ===
+  document.addEventListener('pointerdown',()=>stage.focus({preventScroll:true}),true);
+  document.addEventListener('touchstart',()=>stage.focus({preventScroll:true}),{passive:true,capture:true});
+
+  // === 디버그: D키 / 더블클릭 ===
+  const toggleDebug=()=>document.body.classList.toggle('debug-hotspots');
+  window.addEventListener('keydown',e=>{if(e.key?.toLowerCase()==='d')toggleDebug();},true);
+  document.addEventListener('dblclick',toggleDebug,true);
+  window.addEventListener('load',()=>stage.focus({preventScroll:true}));
+
+  // === 스트림 정리 ===
+  window.addEventListener('beforeunload',()=>stream?.getTracks()?.forEach(t=>t.stop()));
+})();
+</script>
+</body>
+</html>

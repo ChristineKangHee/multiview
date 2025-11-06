@@ -45,7 +45,7 @@
     background-repeat:no-repeat;
     display:none;
   }
-  #screen-record{z-index:3;}
+  #screen-record{z-index:3; display:block;} /* ← 처음부터 record 보이게 */
   #screen-result{z-index:5;}
   #screen-save{z-index:6;}
 
@@ -61,7 +61,7 @@
     background:rgba(255,0,0,.3); outline:1px dashed #fff;
   }
 
-  /* 우하단 전체화면 버튼 */
+  /* 우하단 전체화면(옵션) */
   #hs-full{right:0; bottom:0; width:48px; height:48px; z-index:30;}
 </style>
 </head>
@@ -81,8 +81,8 @@
   <div id="screen-save"   class="screen" style="background-image:url('saveframe.png')"></div>
 
   <!-- 투명 스팟 -->
-  <div id="hs-full"   class="hotspot" title="fullscreen"></div>
-  <div id="hs-record" class="hotspot" style="display:none"></div>
+  <div id="hs-full"   class="hotspot" title="fullscreen"></div> <!-- 옵션 -->
+  <div id="hs-record" class="hotspot"></div>                     <!-- ← 처음부터 표시 -->
   <div id="hs-back"   class="hotspot" style="display:none"></div>
   <div id="hs-print"  class="hotspot" style="display:none"></div>
 </div>
@@ -111,9 +111,9 @@
 
   // === 위치 ===
   const HS={
-    record:{w:0.12,h:0.12,cx:0.50,cy:0.88},
-    back:{x:0.004,y:0.045,w:0.055,h:0.075},
-    print:{x:0.004,y:0.115,w:0.055,h:0.075}
+    record:{w:0.12,h:0.12,cx:0.50,cy:0.88},  // 중앙 하단 원형
+    back:{x:0.004,y:0.045,w:0.055,h:0.075},  // 좌상단
+    print:{x:0.004,y:0.115,w:0.055,h:0.075}  // 좌상단
   };
   function placeHotspots(){
     const r=document.body.getBoundingClientRect(),W=r.width,H=r.height;
@@ -137,7 +137,7 @@
   const nextFrame=()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
   const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
-  // === fullscreen or fallback ===
+  // === Full(옵션) ===
   async function goFullscreenOrFallback(){
     const root=document.documentElement;
     try{
@@ -145,41 +145,41 @@
         await (root.requestFullscreen?.()||root.webkitRequestFullscreen?.call(root));
       }
     }catch(_){/* ignore */}
-    scrRecord.style.display='block';
-    hsRecord.style.display='block';
+    // record는 이미 초기 표시 상태이므로 여기선 추가 작업 없음
     stage.focus({preventScroll:true});
   }
-
-  // === Full 버튼 ===
-  hsFull.addEventListener('click',async()=>{
-    try{await ensureCaptureOnce();}catch(e){alert('이 탭을 선택해주세요.');return;}
-    goFullscreenOrFallback();
-  });
+  hsFull.addEventListener('click',goFullscreenOrFallback);
 
   // === Record ===
   hsRecord.addEventListener('click',async()=>{
     try{
-      await ensureCaptureOnce();
+      await ensureCaptureOnce(); // ← 최초 1회만 권한 팝업
+      // 캡처 직전: 화면에 보이는 record/result/save 오버레이/스팟 숨김
       scrRecord.style.display='none';
       hsRecord.style.display='none';
       scrResult.style.display='none';
       scrSave.style.display='none';
       await nextFrame(); await nextFrame(); await sleep(60);
 
+      // 3분할만 캡처
       const vw=video.videoWidth||innerWidth,vh=video.videoHeight||innerHeight;
       canvas.width=vw; canvas.height=vh;
       const ctx=canvas.getContext('2d'); ctx.imageSmoothingQuality='high';
       ctx.drawImage(video,0,0,vw,vh);
 
+      // 결과 UI
       cams.style.display='none';
       shotWrap.style.display='block';
       scrResult.style.display='block';
       hsBack.style.display='block';
       hsPrint.style.display='block';
-    }catch(e){alert('화면 캡처 권한이 필요합니다.');console.error(e);}
+    }catch(e){
+      alert('화면 캡처 권한이 필요합니다. “이 탭(현재 페이지)”을 선택해주세요.');
+      console.error(e);
+    }
   });
 
-  // === Print (자동저장 없음, saveframe 표시만) ===
+  // === Print (자동 저장 없음; saveframe만 화면에 표시) ===
   hsPrint.addEventListener('click',()=>{
     scrResult.style.display='none'; // resultframe 제거
     scrSave.style.display='block';  // saveframe 표시
@@ -193,6 +193,7 @@
     scrResult.style.display='none';
     shotWrap.style.display='none';
     cams.style.display='grid';
+    // 초기 상태로 복귀: record 보임 + record 스팟 보임
     scrRecord.style.display='block';
     hsRecord.style.display='block';
     hsBack.style.display='none';
@@ -200,7 +201,7 @@
     stage.focus({preventScroll:true});
   });
 
-  // === 터치 포커스 유지 ===
+  // === 포커스/터치 ===
   document.addEventListener('pointerdown',()=>stage.focus({preventScroll:true}),true);
   document.addEventListener('touchstart',()=>stage.focus({preventScroll:true}),{passive:true,capture:true});
 
